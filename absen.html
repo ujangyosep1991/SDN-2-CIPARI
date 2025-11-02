@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Absensi Siswa SDN Ciparay</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+</head>
+
+<body class="bg-gray-100 font-sans">
+  <header class="bg-blue-600 text-white p-4 text-center text-2xl font-bold">
+    📋 Absensi Siswa SDN Ciparay
+  </header>
+
+  <main class="p-6">
+    <!-- Pilihan sesi -->
+    <div class="text-center mb-6">
+      <h2 class="text-xl font-semibold mb-4 text-gray-700">Pilih Sesi Absensi</h2>
+      <div class="flex justify-center space-x-4">
+        <button onclick="selectSession('masuk')" class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg shadow-md">Absen Masuk</button>
+        <button onclick="selectSession('pulang')" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg shadow-md">Absen Pulang</button>
+      </div>
+    </div>
+
+    <!-- Scanner -->
+    <div id="scanner-container" class="hidden bg-white rounded-lg shadow-md p-6 mb-6 text-center">
+      <h2 class="text-xl font-bold text-gray-800 mb-4">Scan Barcode Siswa</h2>
+      <div id="reader" style="width: 300px; margin: auto;"></div>
+      <p id="scan-result" class="mt-4 text-green-600 font-semibold"></p>
+    </div>
+
+    <!-- Daftar siswa -->
+    <div id="student-list" class="bg-white rounded-lg shadow-md p-6">
+      <h2 class="text-xl font-bold text-gray-800 mb-4">Daftar Siswa</h2>
+      <table class="w-full border-collapse">
+        <thead>
+          <tr class="bg-gray-200">
+            <th class="border p-2">No</th>
+            <th class="border p-2">Nama</th>
+            <th class="border p-2">NISN</th>
+            <th class="border p-2">Status</th>
+          </tr>
+        </thead>
+        <tbody id="student-table"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+  const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzSHte13Ocmv9-gW7Xmb79yKGUt4F6P3yxUO_G9aPweXZcqJYoCgF8grWT4sRLuwE3xPg/exec";
+
+  let students = [];
+  let currentSession = "";
+  let html5QrCode;
+  let lastScan = ""; // untuk deteksi duplikat scan
+  let lastScanTime = 0;
+
+  // Ambil data siswa dari Google Sheet
+  async function loadStudents() {
+    const res = await fetch(SCRIPT_URL);
+    students = await res.json();
+    students.forEach(s => s.status = "");
+    renderStudents();
+  }
+
+  function renderStudents() {
+    const table = document.getElementById("student-table");
+    table.innerHTML = "";
+    students.forEach((s, i) => {
+      const row = `
+        <tr class="text-center">
+          <td class="border p-2">${i + 1}</td>
+          <td class="border p-2">${s.name}</td>
+          <td class="border p-2">${s.nisn}</td>
+          <td class="border p-2 ${s.status === 'hadir' ? 'text-green-600 font-semibold' : ''}">
+            ${s.status || '-'}
+          </td>
+        </tr>`;
+      table.innerHTML += row;
+    });
+  }
+
+  function selectSession(session) {
+    currentSession = session;
+    document.getElementById("scanner-container").classList.remove("hidden");
+    startScanner();
+  }
+
+  async function startScanner() {
+    if (html5QrCode) {
+      await html5QrCode.stop().catch(() => {});
+    }
+
+    html5QrCode = new Html5Qrcode("reader");
+
+    html5QrCode.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: 250 },
+      decodedText => handleScan(decodedText),
+      errorMessage => {} // biarkan kosong biar gak spam log
+    ).catch(err => {
+      alert("Gagal mengakses kamera. Aktifkan izin kamera.");
+      console.error(err);
+    });
+  }
+
+  function handleScan(decodedText) {
+    console.log("📷 Hasil scan:", decodedText);
+
+    const now = Date.now();
+    if (decodedText === lastScan && now - lastScanTime < 2000) {
+      // biar gak ke-scan 2x dalam waktu berdekatan
+      return;
+    }
+    lastScan = decodedText;
+    lastScanTime = now;
+
+    const nisn = decodedText.trim();
+
+    // Cek apakah hasil scan valid (angka saja)
+    if (!/^\d+$/.test(nisn)) {
+      document.getElementById("scan-result").textContent = `❌ NISN ${nisn} tidak ditemukan (bukan angka).`;
+      return;
+    }
+
+    const student = students.find(s => String(s.nisn) === nisn);
+    if (!student) {
+      document.getElementById("scan-result").textContent = `❌ NISN ${nisn} tidak ditemukan di daftar siswa.`;
+      return;
+    }
+
+    // Update status
+    student.status = "hadir";
+    renderStudents();
+
+    // Tampilkan hasil sukses
+    document.getElementById("scan-result").textContent = `✅ ${student.name} (${student.nisn}) berhasil absen!`;
+
+    sendToSheet(student);
+  }
+
+  function sendToSheet(student) {
+    fetch(SCRIPT_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nama: student.name,
+        nisn: student.nisn,
+        status: "hadir",
+        sesi: currentSession
+      })
+    })
+      .then(() => console.log(`✅ Data ${student.name} dikirim ke Spreadsheet`))
+      .catch(err => console.error("❌ Gagal kirim:", err));
+  }
+
+  // Jalankan saat halaman dimuat
+  loadStudents();
+</script>
+
+</body>
+</html>
